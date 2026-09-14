@@ -1,0 +1,5 @@
+.dev/
+__pycache__/
+*.pyc
+dist/
+/紀錄.MD

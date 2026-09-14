@@ -1,0 +1,18 @@
+{
+  "name": "quota-resume",
+  "version": "0.1.0",
+  "description": "透過同任務排程，在 Codex 額度恢復後嘗試接續未完成工作。",
+  "author": {
+    "name": "Local developer"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "額度恢復接續",
+    "shortDescription": "額度恢復後，定期嘗試接續原任務。",
+    "longDescription": "為指定任務預設每 5 分鐘一次的原生接續排程；保留上下文，完成或取消時停止。需讓 App 運行，恢復時間與實際觸發仍受額度及排程器影響。",
+    "developerName": "Local developer",
+    "category": "Productivity",
+    "capabilities": [],
+    "defaultPrompt": "使用 $quota-resume，替這個任務啟用額度恢復後自動接續，完成原本工作後停止。"
+  }
+}
