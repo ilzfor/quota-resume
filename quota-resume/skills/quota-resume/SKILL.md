@@ -1,6 +1,6 @@
 ---
 name: quota-resume
-description: 在 Codex 桌面版為指定任務啟用、查看或停止額度恢復後自動接續。使用原任務的定期排程保留上下文，適用於五小時或每週用量耗盡後的接續需求。
+description: 在 Codex 桌面版啟用、查看或停止額度恢復接續，並設定每個任務的週用量停止門檻。使用原任務排程保留上下文，達週門檻即停用後續接續。
 ---
 
 # 額度恢復接續
@@ -13,12 +13,14 @@ description: 在 Codex 桌面版為指定任務啟用、查看或停止額度恢
 2. 使用可用的 `automation_update`、`get_usage_limits`，其他任務才需要 `list_threads` / `read_thread`。預設綁定目前任務，不建立獨立 cron，不新增任務，不切換模型、權限、付費來源或消耗重設券。缺少桌面版排程工具就明確說此環境無法啟用，不用 shell 修改排程資料庫或 TOML 代替。
 3. 啟用目前任務時，從 `CODEX_THREAD_ID` 環境變數取得實際 ID；不可把 session ID 當成 task ID。其他任務使用工具回傳的 ID。只有無法唯一辨識時才詢問。
 4. 讀取 `$CODEX_HOME/automations/*/automation.toml`（未設定 CODEX_HOME 時使用 `~/.codex/automations`），以 `quota-resume:<task-id>` 標記尋找同任務既有排程。更新既有項目；不要建立重複排程。只檢查相關排程，不印出其他任務 prompt 或個人資料。
-5. 讀取目前額度。以服務回傳的 `resetsAt` 為準；五小時是用量視窗，不是從現在再等五小時。`usedPercent` 是已使用比例。每週或其他適用視窗也可能阻擋執行。缺少資料代表未知。需要確定性判斷時，將工具回傳的 JSON 寫到暫存檔，以 `python scripts/quota_status.py --file <path>` 檢查；腳本位置相對於本技能資料夾。多個 bucket 必須由已知帳戶／模型資訊辨識，再加 `--bucket <id>`，不要猜測。
-6. 讀取 [references/heartbeat-prompt.md](references/heartbeat-prompt.md)，填入實際目標、完成條件、限制與工作位置。將完整文字放入自動化 prompt，讓後續執行不依賴外掛檔案仍可用。不要把憑證放入 prompt。
-7. 呼叫 `automation_update` 建立 `kind: heartbeat`、`status: ACTIVE`、`targetThreadId: <實際ID>`，名稱為「額度恢復接續｜<簡短目標>」。預設每 5 分鐘，使用工具支援的分鐘排程格式；使用者指定頻率則遵從。排程是嘗試頻率，不承諾恢復後 5 分鐘內一定執行。通知偏好放工具的 notificationPolicy 欄位；不得把靜音設定塞入 prompt。
+5. 讀取目前額度。以服務回傳的 `resetsAt` 為準；五小時是用量視窗，不是從現在再等五小時。`usedPercent` 是已使用比例。以 `windowDurationMins: 10080` 辨識週用量，不能固定假定 secondary 就是每週。新任務的週停止門檻預設 **70% 已使用**（約保留 30%），使用者指定時使用該值，範圍為 1–100。門檻是停止條件，不是額度恢復時間。將用量工具回傳的 JSON 存為暫存檔後，執行本技能的 `scripts/quota_status.py --file <path> --weekly-stop-percent <門檻>` 判斷；腳本路徑相對於本技能目錄。沒有 Python 時直接使用相同欄位與比較規則。多個 bucket 必須由已知帳戶／模型資訊辨識，再加 `--bucket <id>`，不要猜測。缺少週資料時不可宣稱可安全啟用；先回報未知。若週用量已達門檻，維持或建立 PAUSED 排程並告知停止原因，不啟用工作。
+6. 讀取 [references/heartbeat-prompt.md](references/heartbeat-prompt.md)，填入實際目標、完成條件、限制、工作位置、**數值週門檻及適用 bucket**。將完整文字放入自動化 prompt，讓後續執行不依賴外掛檔案仍可用。不要把憑證放入 prompt。
+7. 週用量低於門檻且適用視窗已確認時，可以為五小時額度恢復等待建立排程；服務另有不可自動解決的限制時先回報。呼叫 `automation_update` 建立 `kind: heartbeat`、`status: ACTIVE`、`targetThreadId: <實際ID>`，名稱為「額度恢復接續｜<簡短目標>」。預設每 5 分鐘，使用工具支援的分鐘排程格式；使用者指定頻率則遵從。排程是嘗試頻率，不承諾恢復後 5 分鐘內一定執行。通知偏好放工具的 notificationPolicy 欄位；不得把靜音設定塞入 prompt。
 8. 工具確認成功後保存回傳 ID 到該工作區的 `紀錄.MD`，記錄目標、任務 ID、頻率、用量狀態與啟用結果。不要記錄 accountId。提供停止方式，並說明電腦需開機且 App 運行。排程執行本身可能消耗額度；不要宣稱背景檢查完全免費。
 
 ## 排程每次執行
+
+開始工作前檢查週用量；在可驗證的工作階段之間也檢查，避免一個排程持續做完所有工作而略過門檻。讀取該排程保存的週門檻與 bucket，只有舊版未保存時才使用預設 70%。`weeklyUsedPercent >= weeklyStopPercent` 即達門檻（包含剛好等於）：透過 `automation_update` 將該排程設為 PAUSED，保留目標、通知設定及其他欄位，記錄與回報停止原因，不開始下一個工作階段。**不要把到達門檻當成一般額度等待後繼續排程，也不要安排自動重啟。** 之後需使用者再次啟用，並重新檢查額度才接續。這是階段間的保護，不能精確限制 token、強制中斷正在執行的回合或阻止其他任務消耗共用額度。
 
 以已保存 prompt 的工作範圍為準。使用者後來取消、要求暫停或改變範圍時，先處理最新指示。只有未完成且仍被授權的工作可以接續；完成、取消或需要使用者必要資訊時停用這個排程。維持原任務的上下文與工作目錄。
 
@@ -28,7 +30,11 @@ description: 在 Codex 桌面版為指定任務啟用、查看或停止額度恢
 
 ## 查看與停止
 
-以目標任務 ID 找到標記相符的排程，透過 `automation_update` 的 view 取得最新資料。查看時只報真實狀態、頻率、最近結果和已知限制，不把 ACTIVE 當成已成功恢復工作的證據。
+以目標任務 ID 找到標記相符的排程，讀取其最新設定並透過 `automation_update` 的 view 顯示狀態。查看時報告保存的週門檻、目前週已使用比例、狀態、頻率、最近結果和已知限制，不把 ACTIVE 當成已成功恢復工作的證據。
+
+## 調整週門檻
+
+使用者可以說「將這個任務的週用量停止門檻設為 70%」。明確使用「已使用」百分比；若使用者說保留 30%，換算為已使用 70%。只更新指定任務的既有排程 prompt，把舊門檻取代成單一新值，保留目標、完成條件、bucket、頻率及 notificationPolicy，不重複新增排程。若目前週用量已達新門檻，更新時也設為 PAUSED。其他情況保留既有 ACTIVE／PAUSED 狀態：提高門檻不代表使用者要求重新啟用。若沒有該任務排程，說明新啟用預設是 70%，不要宣稱已修改其他任務。已保存舊版 prompt 的排程不會只因安裝外掛更新就自動採用新規則，必須透過工具更新該排程。
 
 使用者要求停止，或工作完成／取消／需要使用者必要決策時，使用 `automation_update` 更新該 ID 為 PAUSED，保留完整其他欄位與 notificationPolicy。讀取最新欄位再更新，不刪除其他排程。停止 heartbeat 不等於中斷正在執行的操作；說清楚停止的是後續自動接續。
 

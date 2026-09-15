@@ -8,6 +8,19 @@ import sys
 import time
 from pathlib import Path
 
+DEFAULT_WEEKLY_STOP_PERCENT = 70
+WEEK_MINUTES = 7 * 24 * 60
+
+
+def weekly_percent(value):
+    try:
+        percent = float(value)
+    except (ValueError, TypeError):
+        raise argparse.ArgumentTypeError("weekly stop percent must be between 1 and 100")
+    if not number(percent) or not 1 <= percent <= 100:
+        raise argparse.ArgumentTypeError("weekly stop percent must be between 1 and 100")
+    return percent
+
 
 def unwrap(value):
     if not isinstance(value, dict):
@@ -33,13 +46,16 @@ def number(value):
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
-def classify(payload, *, bucket=None, now=None):
+def classify(payload, *, bucket=None, now=None, weekly_stop_percent=DEFAULT_WEEKLY_STOP_PERCENT):
     now = time.time() if now is None else now
-    result = {"status": "unknown", "bucket": bucket, "retryAt": None}
+    result = {"status": "unknown", "bucket": bucket, "retryAt": None,
+              "weeklyStopPercent": weekly_stop_percent, "weeklyUsedPercent": None}
 
     def answer(status, reason, retry_at=None):
         return dict(result, status=status, reason=reason, retryAt=retry_at)
 
+    if not number(weekly_stop_percent) or not 1 <= weekly_stop_percent <= 100:
+        return answer("unknown", "invalid_weekly_threshold")
     try:
         data = unwrap(payload)
     except (ValueError, TypeError):
@@ -82,6 +98,15 @@ def classify(payload, *, bucket=None, now=None):
             missing = True
             continue
         windows.append(window)
+    # Identify the week by duration, not the primary/secondary position.
+    weekly = [w for w in windows if w.get("windowDurationMins") == WEEK_MINUTES]
+    if weekly:
+        result["weeklyUsedPercent"] = max(w["usedPercent"] for w in weekly)
+        if result["weeklyUsedPercent"] >= weekly_stop_percent:
+            # This is a user stop boundary: pause the heartbeat, do not auto-retry.
+            return answer("blocked", "weekly_threshold_reached")
+    if not weekly:
+        return answer("unknown", "weekly_window_unavailable")
     exhausted = [w for w in windows if w["usedPercent"] >= 100]
     if exhausted:
         resets = [w.get("resetsAt") for w in exhausted]
@@ -101,10 +126,14 @@ def main():
     parser.add_argument("--file", type=Path, help="Usage JSON; omit to read stdin")
     parser.add_argument("--bucket", help="Verified applicable metered limit ID")
     parser.add_argument("--now", type=float, help="Unix seconds, for reproducible diagnostics")
+    parser.add_argument("--weekly-stop-percent", type=weekly_percent,
+                        default=DEFAULT_WEEKLY_STOP_PERCENT,
+                        help="Pause at this WEEKLY used percent (1-100; default: 70)")
     args = parser.parse_args()
     try:
         raw = args.file.read_text(encoding="utf-8-sig") if args.file else sys.stdin.read()
-        status = classify(json.loads(raw), bucket=args.bucket, now=args.now)
+        status = classify(json.loads(raw), bucket=args.bucket, now=args.now,
+                          weekly_stop_percent=args.weekly_stop_percent)
     except (ValueError, OSError) as exc:
         print(json.dumps({"status": "unknown", "reason": type(exc).__name__}))
         return 2
